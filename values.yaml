@@ -1,0 +1,358 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# Pupitre Platform — Helm Values
+#
+# Deploys pupitre2 (https://github.com/jojo91550/pupitre2): one API,
+# pupitre-api, which replaces user-service, course-service and checker-service
+# of genesary/pupitre, and the frontend, pupitre-front. Upgrading a release of
+# genesary/pupitre-helm: see README.md, "Upgrading from genesary/pupitre-helm".
+# ─────────────────────────────────────────────────────────────────────────────
+
+# ── Name overrides ────────────────────────────────────────────────────────────
+nameOverride: ""
+fullnameOverride: ""
+
+# ── Cluster ───────────────────────────────────────────────────────────────────
+# Override when your cluster uses a non-standard DNS domain.
+clusterDomain: cluster.local
+
+# ── Secrets ───────────────────────────────────────────────────────────────────
+
+# JWT signing secret of the API. Three modes:
+#   1. jwtExistingSecret — reference a pre-existing K8s Secret (Vault / ESO / SOPS)
+#   2. jwtSecret non-empty — explicit value rendered into the chart Secret
+#   3. Empty (default) — a random 64-char secret is generated on first install
+#      and kept in the release Secret on upgrades.
+# The API refuses to start with a secret shorter than 32 characters or with the
+# placeholder of genesary/pupitre-helm; the chart refuses to render them.
+jwtSecret: ""
+jwtExistingSecret: ""
+jwtExistingSecretKey: "JWT_SECRET"
+
+# Image pull secrets — for private registries.
+# imagePullSecrets:
+#   - name: ghcr-credentials
+imagePullSecrets: []
+
+# NetworkPolicies — restrict pod-to-pod traffic.
+# Requires a CNI that supports NetworkPolicy (Calico, Cilium, Weave…).
+networkPolicy:
+  enabled: false
+  # Ports the API may reach outside the cluster's DNS and the bundled database:
+  # the git repositories of the courses (443, 22), an external database (5432),
+  # the OIDC provider and GitLab. Add your providers' ports when they differ.
+  apiEgressPorts: [443, 22, 5432, 80]
+
+# ── Admin account ─────────────────────────────────────────────────────────────
+# Seeded by the API on startup (idempotent). Three modes:
+#
+#   Mode 1 — auto-generated (default):
+#     Leave password empty. A random 32-char password is generated on first
+#     install and persisted in the release Secret. Retrieve it with:
+#       kubectl get secret <release>-secrets \
+#         -o jsonpath='{.data.ADMIN_PASSWORD}' | base64 -d
+#
+#   Mode 2 — explicit:
+#     admin.password: "MyStr0ngPassw0rd!"
+#
+#   Mode 3 — existing K8s Secret (Vault / ESO / SOPS):
+#     admin.existingSecret: "my-admin-secret"
+#
+# Passwords may be cleartext or a bcrypt hash (values starting with "$2").
+admin:
+  password: ""
+  existingSecret: ""
+  existingSecretKey: "ADMIN_PASSWORD"
+
+# ── API ───────────────────────────────────────────────────────────────────────
+
+api:
+  replicaCount: 1
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
+  topologySpreadConstraints: []
+  # Production example — spread across nodes:
+  # topologySpreadConstraints:
+  #   - maxSkew: 1
+  #     topologyKey: kubernetes.io/hostname
+  #     whenUnsatisfiable: DoNotSchedule
+  #     labelSelector:
+  #       matchLabels:
+  #         app.kubernetes.io/component: api
+  image:
+    repository: ghcr.io/jojo91550/pupitre-api
+    # Defaults to the chart's appVersion. Pin a version, never `latest`.
+    tag: ""
+    pullPolicy: IfNotPresent
+  service:
+    type: ClusterIP
+    port: 8080
+  # The sum of the three services' requests and limits.
+  resources:
+    requests:
+      memory: "256Mi"
+      cpu: "200m"
+    limits:
+      memory: "1Gi"
+      cpu: "900m"
+  env:
+    JWT_EXPIRY_HOURS: "24"
+    GIT_CACHE_TTL: "10"
+    # debug/info/warn/error
+    LOG_LEVEL: "info"
+    # json (default) or text (human-readable, for local dev)
+    LOG_FORMAT: "json"
+    # One pool for the whole API: the sum of the two services' pools.
+    DB_MAX_OPEN_CONNS: "30"
+    DB_MAX_IDLE_CONNS: "30"
+    # GitLab instance the lab checks read.
+    GITLAB_BASE_URL: "http://gitlab.local:8880"
+  # Git token for private repository access.
+  # gitTokenExistingSecret: "my-git-secret"   # preferred for production
+  # gitTokenExistingSecretKey: "GIT_TOKEN"
+  gitToken: ""
+  gitTokenExistingSecret: ""
+  gitTokenExistingSecretKey: "GIT_TOKEN"
+  # Per-URL git tokens: a Secret with a `git-credentials.yaml` key, mounted at
+  # /etc/git-credentials. Optional: the API starts without it.
+  gitCredentialsSecret: course-repo-secret
+  # GitLab API token of the lab checks (stored in the release Secret as GITLAB_TOKEN).
+  gitLabToken: ""
+  # Media uploaded by admins, written to /data/uploads. Persistent by default,
+  # so they survive a restart; with persistence disabled, an emptyDir.
+  # Several replicas share the volume: use a ReadWriteMany storage class then.
+  uploads:
+    persistence:
+      enabled: true
+      # Use a PersistentVolumeClaim you manage instead of creating one.
+      existingClaim: ""
+      size: 5Gi
+      storageClass: ""
+      accessMode: ReadWriteOnce
+  extraEnv: []
+  extraVolumeMounts: []
+  extraVolumes: []
+  autoscaling:
+    enabled: false
+    minReplicas: 1
+    maxReplicas: 4
+    targetCPUUtilizationPercentage: 70
+    targetMemoryUtilizationPercentage: 80
+  nodeSelector: {}
+
+# ── Frontend ──────────────────────────────────────────────────────────────────
+# Static files served by nginx: the learner app, and the admin app under
+# /admin and /manager. It reads no configuration at run time.
+
+frontend:
+  replicaCount: 1
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
+  topologySpreadConstraints: []
+  image:
+    repository: ghcr.io/jojo91550/pupitre-front
+    # Defaults to the chart's appVersion. Pin a version, never `latest`.
+    tag: ""
+    pullPolicy: IfNotPresent
+  service:
+    type: ClusterIP
+    port: 3000
+  resources:
+    requests:
+      memory: "32Mi"
+      cpu: "20m"
+    limits:
+      memory: "128Mi"
+      cpu: "200m"
+  extraEnv: []
+  extraVolumeMounts: []
+  extraVolumes: []
+  autoscaling:
+    enabled: false
+    minReplicas: 1
+    maxReplicas: 3
+    targetCPUUtilizationPercentage: 70
+  nodeSelector: {}
+
+# ── SSO / OAuth ───────────────────────────────────────────────────────────────
+# redirectBase: public URL sent to the providers as redirect_uri.
+#   Defaults to the ingress host when empty.
+#   Can also be overridden at runtime via the admin UI (oidc_redirect_base setting).
+#
+# Two complementary mechanisms:
+#   - sso.oidc      → a single OpenID Connect provider (e.g. Keycloak). Seeded
+#                     into the platform settings on startup; configurable later
+#                     in the admin UI. Recommended for Keycloak.
+#   - sso.providers → one or more OAuth2/OIDC providers (GitHub, GitLab, Google…).
+#
+# In BOTH cases client secrets are sourced from a Kubernetes Secret, never
+# hardcoded in the chart. For dev you may put the secret inline (clientSecret /
+# clientSecret) and the chart renders it into the release Secret; for production
+# point at an existingSecret you manage (Vault / External Secrets / SOPS).
+sso:
+  enabled: false
+  redirectBase: ""
+
+  # ── OpenID Connect provider (Keycloak, Authentik, …) ──────────────────────
+  # When enabled, these values seed the OIDC platform settings on startup. The
+  # client secret is mounted from a Secret and re-seeded on each pod start, so
+  # rotating it requires a pod restart.
+  oidc:
+    enabled: false
+    # OIDC discovery URL. For Keycloak: https://<host>/realms/<realm>
+    providerURL: ""
+    # Optional. Set when the discovery URL is cluster-internal but the issuer
+    # claim in tokens is the public URL (split-horizon, e.g. KinD).
+    issuerURL: ""
+    clientID: ""
+    # Cleartext client secret — dev only. Rendered into the release Secret.
+    # For production leave empty and use existingSecret below.
+    clientSecret: ""
+    scopes: "openid email profile groups"
+    groupClaim: "groups"
+    # Optional comma-separated IdP groups authorized as platform admins. When
+    # set, this mapping is authoritative: OIDC users outside these groups are
+    # synchronized as students at their next OIDC login — managers included.
+    # Leave it empty when the platform has managers, and map the admin group
+    # in /admin/groups instead.
+    groupAdmins: ""
+    # Optional. Rewrites the internal base URL to a browser-reachable one in the
+    # authorize redirect (split-horizon).
+    browserBaseURL: ""
+    # Optional per-OIDC redirect base override (defaults to sso.redirectBase).
+    redirectBase: ""
+    # Set to true to disable TLS certificate verification when connecting to the
+    # OIDC provider. Use when the provider uses a custom CA or a self-signed cert.
+    # WARNING: only use in trusted environments; disables x509 chain validation.
+    insecureSkipVerify: false
+    # ── Production secret sourcing (Vault / External Secrets / SOPS) ──
+    # Name of an existing Secret holding the client secret. Empty disables it.
+    existingSecret: ""
+    existingSecretKey: "OIDC_CLIENT_SECRET"
+
+  # ── OAuth2 / OIDC providers ───────────────────────────────────────────────
+  # Each provider's client secret is injected from a Secret (env var), not the
+  # ConfigMap. Supply it inline via clientSecret (rendered into the release
+  # Secret) OR reference an existingSecret/existingSecretKey you manage.
+  #
+  #   - id: github          # OAuth2 — no issuerUrl needed
+  #     name: GitHub
+  #     clientId: "..."
+  #     clientSecret: "..."           # dev: rendered into the release Secret
+  #
+  #   - id: gitlab
+  #     name: GitLab
+  #     clientId: "..."
+  #     issuerUrl: "https://gitlab.com"
+  #     existingSecret: gitlab-oauth    # prod: secret you manage
+  #     existingSecretKey: clientSecret
+  #
+  #   - id: google
+  #     name: Google
+  #     clientId: "..."
+  #     clientSecret: "..."
+  #     issuerUrl: "https://accounts.google.com"
+  providers: []
+
+# ── Routing ───────────────────────────────────────────────────────────────────
+# Two independent front doors. Either, or BOTH, may be enabled: they render
+# separate objects and do not interfere, so a cluster can serve traffic through
+# an Ingress while migrating to a Gateway, or use one per entry point.
+#
+# Both render from the same routing table (see `pupitre.routeTable` in
+# _helpers.tpl): /api, /uploads and /health to the API, everything else to the
+# frontend.
+ingress:
+  enabled: true
+  className: traefik   # IngressClass name as it exists in the cluster
+  annotations: {}
+  host: pupitre.local
+  tls: []
+
+# Gateway API HTTPRoute. Requires the Gateway API CRDs and a Gateway to attach
+# to; the Gateway owns the listeners and TLS, so nothing of that sort here.
+httpRoute:
+  enabled: false
+  annotations: {}
+  # Gateway(s) this route attaches to. At least one is required when enabled.
+  #   - name:        Gateway name (required)
+  #     namespace:   defaults to the release namespace
+  #     sectionName: attach to one named listener rather than all of them
+  #     port:        attach to listeners on this port
+  parentRefs: []
+  #  - name: pupitre-gateway
+  #    namespace: gateway-system
+  #    sectionName: websecure
+  # Defaults to [ ingress.host ] when empty.
+  hostnames: []
+  # Whether the Gateway listener terminates TLS. The Gateway owns the
+  # certificate; this only tells the chart to spell the public URL (CORS
+  # origin, OAuth redirect base) with https.
+  tls: false
+
+# ── Database ──────────────────────────────────────────────────────────────────
+# `database` is the single source of truth for connection + credentials. It is
+# shared by the bundled PostgreSQL (when postgresql.enabled=true) and by the API.
+#
+#   Option A — bundled PostgreSQL (dev / small deployments):
+#     postgresql.enabled: true
+#     The in-cluster instance is provisioned from database.auth and database.name;
+#     the API connects to it automatically (database.host/port are ignored).
+#
+#   Option B — external / managed database (production):
+#     postgresql.enabled: false
+#     Point database.host/port/name at your managed PostgreSQL and supply
+#     credentials through database.auth.existingSecret (no secrets in values).
+
+# Toggle + runtime settings for the bundled in-cluster PostgreSQL.
+# Credentials/connection live under `database` below — not here.
+postgresql:
+  enabled: false
+  image:
+    repository: postgres
+    tag: "17-alpine"
+    pullPolicy: IfNotPresent
+  persistence:
+    enabled: false
+    size: 5Gi
+    storageClass: ""
+    accessMode: ReadWriteOnce
+  resources:
+    requests:
+      memory: "128Mi"
+      cpu: "100m"
+    limits:
+      memory: "512Mi"
+      cpu: "500m"
+  nodeSelector: {}
+
+database:
+  # Connection target for an EXTERNAL database (Option B).
+  # Ignored when postgresql.enabled=true — the API then reaches the in-cluster
+  # Service at <release>-postgresql.<namespace>.svc.<clusterDomain>:5432.
+  host: "postgresql.example.com"
+  port: 5432
+  # Database (schema) name. Also used to provision the bundled instance.
+  name: pupitre
+  auth:
+    username: pupitre
+    # Cleartext password. Fine for dev; for production leave this and rely on
+    # existingSecret instead so no credentials are committed to values.
+    password: pupitre_secret
+    # ── Production secret sourcing (Vault / External Secrets / SOPS) ──
+    # Name of an existing Secret to read credentials from. Empty disables it.
+    existingSecret: ""
+    # Key holding the FULL connection string, e.g.
+    #   postgres://user:pass@host:5432/db
+    # Preferred for external databases: DATABASE_URL is read straight from the
+    # Secret and never rendered into the chart's own Secret. Set to "" to instead
+    # have the URL assembled from the fields above (e.g. password-only secrets).
+    urlKey: "DATABASE_URL"
+    # Key holding ONLY the password. Used as POSTGRES_PASSWORD for the bundled
+    # database when postgresql.enabled=true.
+    passwordKey: "db_password"

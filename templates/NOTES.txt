@@ -1,0 +1,29 @@
+🎓 Pupitre Platform — {{ .Chart.AppVersion }}
+{{- if or .Values.ingress.enabled .Values.httpRoute.enabled }}
+
+📡 Access the platform:
+  {{ include "pupitre.publicUrl" . }}
+  Served by:
+  {{- if .Values.ingress.enabled }}
+    - Ingress {{ include "pupitre.fullname" . }} (class: {{ .Values.ingress.className | default "cluster default" }})
+  {{- end }}
+  {{- if .Values.httpRoute.enabled }}
+    - HTTPRoute {{ include "pupitre.fullname" . }}{{ with .Values.httpRoute.parentRefs }} → Gateway {{ (first .).name }}{{ end }}
+  {{- end }}
+{{- else }}
+
+📡 Access the services:
+  API      : http://{{ include "pupitre.fullname" . }}-api:{{ .Values.api.service.port }}
+  Frontend : kubectl port-forward svc/{{ include "pupitre.fullname" . }}-frontend 3000:{{ .Values.frontend.service.port }}
+{{- end }}
+
+🔐 Admin credentials  (login: admin)
+{{- if .Values.admin.existingSecret }}
+   Password → stored in existing Secret "{{ .Values.admin.existingSecret }}" (key: {{ .Values.admin.existingSecretKey }})
+{{- else if .Values.admin.password }}
+   Password → set via admin.password in values
+{{- else }}
+   Password → auto-generated, retrieve it with:
+     kubectl get secret {{ include "pupitre.fullname" . }}-secrets \
+       -o jsonpath='{.data.ADMIN_PASSWORD}' | base64 -d && echo
+{{- end }}

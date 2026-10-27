@@ -1,0 +1,43 @@
+suite: frontend deployment
+templates:
+  - frontend/deployment.yaml
+release:
+  name: pupitre
+tests:
+  - it: renders a Deployment named after the release
+    asserts:
+      - isKind:
+          of: Deployment
+      - equal:
+          path: metadata.name
+          value: pupitre-frontend
+
+  - it: runs the frontend container from the configured image
+    set:
+      frontend.image.tag: "test"
+    asserts:
+      - equal:
+          path: spec.template.spec.containers[0].name
+          value: frontend
+      - equal:
+          path: spec.template.spec.containers[0].image
+          value: ghcr.io/jojo91550/pupitre-front:test
+
+  - it: runs nginx-unprivileged's user on a read-only root filesystem
+    asserts:
+      - equal:
+          path: spec.template.spec.containers[0].securityContext.runAsUser
+          value: 101
+      - equal:
+          path: spec.template.spec.containers[0].securityContext.readOnlyRootFilesystem
+          value: true
+      - contains:
+          path: spec.template.spec.containers[0].volumeMounts
+          content:
+            name: tmp
+            mountPath: /tmp
+
+  - it: needs no configuration at run time
+    asserts:
+      - notExists:
+          path: spec.template.spec.containers[0].env

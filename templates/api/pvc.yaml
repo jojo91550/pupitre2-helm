@@ -1,0 +1,21 @@
+{{- $persistence := .Values.api.uploads.persistence -}}
+{{- if and $persistence.enabled (not $persistence.existingClaim) }}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "pupitre.fullname" . }}-uploads
+  labels:
+    {{- include "pupitre.api.labels" . | nindent 4 }}
+  annotations:
+    # The uploaded media are data: uninstalling the release keeps them.
+    helm.sh/resource-policy: keep
+spec:
+  accessModes:
+    - {{ $persistence.accessMode }}
+  resources:
+    requests:
+      storage: {{ $persistence.size }}
+  {{- if $persistence.storageClass }}
+  storageClassName: {{ $persistence.storageClass }}
+  {{- end }}
+{{- end }}

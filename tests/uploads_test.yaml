@@ -1,0 +1,45 @@
+suite: uploads volume
+templates:
+  - api/pvc.yaml
+release:
+  name: pupitre
+tests:
+  - it: creates a claim kept on uninstall
+    asserts:
+      - isKind:
+          of: PersistentVolumeClaim
+      - equal:
+          path: metadata.name
+          value: pupitre-uploads
+      - equal:
+          path: metadata.annotations["helm.sh/resource-policy"]
+          value: keep
+      - equal:
+          path: spec.resources.requests.storage
+          value: 5Gi
+
+  - it: uses the configured access mode and storage class
+    set:
+      api.uploads.persistence.accessMode: ReadWriteMany
+      api.uploads.persistence.storageClass: nfs
+    asserts:
+      - equal:
+          path: spec.accessModes[0]
+          value: ReadWriteMany
+      - equal:
+          path: spec.storageClassName
+          value: nfs
+
+  - it: creates no claim for an existing one
+    set:
+      api.uploads.persistence.existingClaim: my-uploads
+    asserts:
+      - hasDocuments:
+          count: 0
+
+  - it: creates no claim when persistence is disabled
+    set:
+      api.uploads.persistence.enabled: false
+    asserts:
+      - hasDocuments:
+          count: 0

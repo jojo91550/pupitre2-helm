@@ -1,0 +1,59 @@
+{{- if .Values.httpRoute.enabled -}}
+{{- $fullName := include "pupitre.fullname" . -}}
+{{- $routes := (include "pupitre.routeTable" . | fromYaml).routes -}}
+{{- $hostnames := include "pupitre.httpRouteHostnames" . -}}
+{{- if not .Values.httpRoute.parentRefs }}
+{{- fail "httpRoute.enabled is true but httpRoute.parentRefs is empty: an HTTPRoute with no parentRefs attaches to no Gateway and routes nothing. Set httpRoute.parentRefs[0].name to your Gateway." }}
+{{- end }}
+# Every rule is an Exact or PathPrefix match — Gateway API *Core* conformance,
+# which every Gateway implements. Nothing here depends on RegularExpression
+# support, so the platform routes correctly on any conformant Gateway.
+#
+# This may be enabled alongside `ingress`. The two are independent objects, so
+# a cluster can serve both while migrating from an Ingress controller to a
+# Gateway, or run an Ingress for one entry point and a Gateway for another.
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: {{ $fullName }}
+  labels:
+    {{- include "pupitre.labels" . | nindent 4 }}
+  {{- with .Values.httpRoute.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  parentRefs:
+    {{- range .Values.httpRoute.parentRefs }}
+    - name: {{ .name | quote }}
+      {{- with .namespace }}
+      namespace: {{ . | quote }}
+      {{- end }}
+      {{- with .sectionName }}
+      sectionName: {{ . | quote }}
+      {{- end }}
+      {{- with .port }}
+      port: {{ . }}
+      {{- end }}
+      {{- with .group }}
+      group: {{ . | quote }}
+      {{- end }}
+      {{- with .kind }}
+      kind: {{ . | quote }}
+      {{- end }}
+    {{- end }}
+  {{- with $hostnames }}
+  hostnames:
+    {{- . | nindent 4 }}
+  {{- end }}
+  rules:
+    {{- range $routes }}
+    - matches:
+        - path:
+            type: {{ if eq .match "exact" }}Exact{{ else }}PathPrefix{{ end }}
+            value: {{ .path | quote }}
+      backendRefs:
+        - name: {{ $fullName }}-{{ .service }}
+          port: {{ include "pupitre.routeServicePort" (dict "service" .service "root" $) }}
+    {{- end }}
+{{- end }}
