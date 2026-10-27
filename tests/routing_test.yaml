@@ -1,0 +1,159 @@
+suite: routing — Ingress and HTTPRoute
+templates:
+  - ingress.yaml
+  - httproute.yaml
+release:
+  name: pupitre
+tests:
+  # ── Both front doors are independent ────────────────────────────────────────
+  - it: renders only an Ingress by default
+    asserts:
+      - hasDocuments:
+          count: 1
+        template: ingress.yaml
+      - isKind:
+          of: Ingress
+        template: ingress.yaml
+      - hasDocuments:
+          count: 0
+        template: httproute.yaml
+
+  - it: renders both an Ingress and an HTTPRoute when both are enabled
+    set:
+      httpRoute.enabled: true
+      httpRoute.parentRefs:
+        - name: pupitre-gateway
+    asserts:
+      - hasDocuments:
+          count: 1
+        template: ingress.yaml
+      - hasDocuments:
+          count: 1
+        template: httproute.yaml
+
+  - it: refuses to render an HTTPRoute that attaches to no Gateway
+    template: httproute.yaml
+    set:
+      httpRoute.enabled: true
+      httpRoute.parentRefs: []
+    asserts:
+      - failedTemplate:
+          errorMessage: >-
+            httpRoute.enabled is true but httpRoute.parentRefs is empty: an
+            HTTPRoute with no parentRefs attaches to no Gateway and routes
+            nothing. Set httpRoute.parentRefs[0].name to your Gateway.
+
+  # ── The routing table ───────────────────────────────────────────────────────
+  - it: routes /api, /uploads, /metrics and /health to the API and the rest to the frontend
+    template: ingress.yaml
+    asserts:
+      - equal:
+          path: spec.rules[0].http.paths
+          value:
+            - path: /api
+              pathType: Prefix
+              backend:
+                service:
+                  name: pupitre-api
+                  port:
+                    name: http
+            - path: /uploads
+              pathType: Prefix
+              backend:
+                service:
+                  name: pupitre-api
+                  port:
+                    name: http
+            - path: /metrics
+              pathType: Prefix
+              backend:
+                service:
+                  name: pupitre-api
+                  port:
+                    name: http
+            - path: /health
+              pathType: Exact
+              backend:
+                service:
+                  name: pupitre-api
+                  port:
+                    name: http
+            - path: /
+              pathType: Prefix
+              backend:
+                service:
+                  name: pupitre-frontend
+                  port:
+                    name: http
+
+  - it: renders the same table on the HTTPRoute, with numeric ports
+    template: httproute.yaml
+    set:
+      httpRoute.enabled: true
+      httpRoute.parentRefs:
+        - name: pupitre-gateway
+    asserts:
+      - equal:
+          path: spec.rules
+          value:
+            - matches:
+                - path:
+                    type: PathPrefix
+                    value: /api
+              backendRefs:
+                - name: pupitre-api
+                  port: 8080
+            - matches:
+                - path:
+                    type: PathPrefix
+                    value: /uploads
+              backendRefs:
+                - name: pupitre-api
+                  port: 8080
+            - matches:
+                - path:
+                    type: PathPrefix
+                    value: /metrics
+              backendRefs:
+                - name: pupitre-api
+                  port: 8080
+            - matches:
+                - path:
+                    type: Exact
+                    value: /health
+              backendRefs:
+                - name: pupitre-api
+                  port: 8080
+            - matches:
+                - path:
+                    type: PathPrefix
+                    value: /
+              backendRefs:
+                - name: pupitre-frontend
+                  port: 3000
+
+  - it: defaults the HTTPRoute hostnames to the Ingress host
+    template: httproute.yaml
+    set:
+      ingress.host: courses.example.com
+      httpRoute.enabled: true
+      httpRoute.parentRefs:
+        - name: pupitre-gateway
+    asserts:
+      - equal:
+          path: spec.hostnames
+          value:
+            - courses.example.com
+
+  - it: uses the Ingress host and class
+    template: ingress.yaml
+    set:
+      ingress.host: courses.example.com
+      ingress.className: nginx
+    asserts:
+      - equal:
+          path: spec.rules[0].host
+          value: courses.example.com
+      - equal:
+          path: spec.ingressClassName
+          value: nginx

@@ -1,0 +1,40 @@
+{{- if .Values.ingress.enabled -}}
+{{- $fullName := include "pupitre.fullname" . -}}
+{{- $routes := (include "pupitre.routeTable" . | fromYaml).routes -}}
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ $fullName }}
+  labels:
+    {{- include "pupitre.labels" . | nindent 4 }}
+  {{- with .Values.ingress.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  {{- if .Values.ingress.className }}
+  ingressClassName: {{ .Values.ingress.className }}
+  {{- end }}
+  {{- if .Values.ingress.tls }}
+  tls:
+    {{- toYaml .Values.ingress.tls | nindent 4 }}
+  {{- end }}
+  rules:
+    - host: {{ .Values.ingress.host | quote }}
+      http:
+        paths:
+          {{- /*
+            Every rule is a Prefix (or one Exact) match, so this renders the
+            same on any Ingress controller — no regex, no controller-specific
+            pathType, no annotation.
+          */}}
+          {{- range $routes }}
+          - path: {{ .path | quote }}
+            pathType: {{ if eq .match "exact" }}Exact{{ else }}Prefix{{ end }}
+            backend:
+              service:
+                name: {{ $fullName }}-{{ .service }}
+                port:
+                  name: http
+          {{- end }}
+{{- end }}

@@ -1,0 +1,184 @@
+suite: api deployment
+templates:
+  - api/deployment.yaml
+  - api/configmap.yaml
+release:
+  name: pupitre
+tests:
+  - it: renders a Deployment named after the release
+    template: api/deployment.yaml
+    asserts:
+      - isKind:
+          of: Deployment
+      - equal:
+          path: metadata.name
+          value: pupitre-api
+
+  - it: runs the API from the chart's appVersion by default
+    template: api/deployment.yaml
+    chart:
+      appVersion: 0.1.0
+    asserts:
+      - equal:
+          path: spec.template.spec.containers[0].name
+          value: api
+      - equal:
+          path: spec.template.spec.containers[0].image
+          value: ghcr.io/jojo91550/pupitre-api:0.1.0
+
+  - it: runs the configured image tag
+    template: api/deployment.yaml
+    set:
+      api.image.tag: "test"
+    asserts:
+      - equal:
+          path: spec.template.spec.containers[0].image
+          value: ghcr.io/jojo91550/pupitre-api:test
+
+  - it: listens on 8080 and probes /health
+    template: api/deployment.yaml
+    asserts:
+      - equal:
+          path: spec.template.spec.containers[0].ports[0].containerPort
+          value: 8080
+      - equal:
+          path: spec.template.spec.containers[0].readinessProbe.httpGet.path
+          value: /health
+      - equal:
+          path: spec.template.spec.containers[0].livenessProbe.httpGet.path
+          value: /health
+
+  - it: sets no variable of the three former services
+    template: api/deployment.yaml
+    asserts:
+      - notContains:
+          path: spec.template.spec.containers[0].env
+          any: true
+          content:
+            name: INTERNAL_SERVICE_SECRET
+      - notContains:
+          path: spec.template.spec.containers[0].env
+          any: true
+          content:
+            name: USER_SERVICE_URL
+      - notContains:
+          path: spec.template.spec.containers[0].env
+          any: true
+          content:
+            name: COURSE_SERVICE_URL
+
+  - it: reads the merged configuration file
+    template: api/deployment.yaml
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: CONFIG_PATH
+            value: /etc/pupitre/config.yaml
+      - contains:
+          path: spec.template.spec.containers[0].volumeMounts
+          content:
+            name: config
+            mountPath: /etc/pupitre
+            readOnly: true
+
+  - it: merges the services' configuration without their URLs
+    template: api/configmap.yaml
+    set:
+      ingress.host: courses.example.com
+    asserts:
+      - matchRegex:
+          path: data["config.yaml"]
+          pattern: 'port: 8080'
+      - matchRegex:
+          path: data["config.yaml"]
+          pattern: 'uploadsDir: "/data/uploads"'
+      - matchRegex:
+          path: data["config.yaml"]
+          pattern: '- "http://courses.example.com"'
+      - notMatchRegex:
+          path: data["config.yaml"]
+          pattern: 'ServiceUrl'
+
+  # ── Uploads (pupitre2 docs/specs/190-backend-defects.md B22) ────────────────
+  - it: mounts a persistent volume at /data/uploads by default
+    template: api/deployment.yaml
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].volumeMounts
+          content:
+            name: uploads
+            mountPath: /data/uploads
+      - contains:
+          path: spec.template.spec.volumes
+          content:
+            name: uploads
+            persistentVolumeClaim:
+              claimName: pupitre-uploads
+      - equal:
+          path: spec.template.spec.securityContext.fsGroup
+          value: 1000
+
+  - it: mounts an existing claim at /data/uploads
+    template: api/deployment.yaml
+    set:
+      api.uploads.persistence.existingClaim: my-uploads
+    asserts:
+      - contains:
+          path: spec.template.spec.volumes
+          content:
+            name: uploads
+            persistentVolumeClaim:
+              claimName: my-uploads
+
+  - it: falls back to an emptyDir when persistence is disabled
+    template: api/deployment.yaml
+    set:
+      api.uploads.persistence.enabled: false
+    asserts:
+      - contains:
+          path: spec.template.spec.volumes
+          content:
+            name: uploads
+            emptyDir: {}
+
+  - it: keeps the root filesystem read-only
+    template: api/deployment.yaml
+    asserts:
+      - equal:
+          path: spec.template.spec.containers[0].securityContext.readOnlyRootFilesystem
+          value: true
+      - equal:
+          path: spec.template.spec.containers[0].securityContext.runAsUser
+          value: 1000
+
+  - it: seeds OIDC from the values and mounts its secret as a file
+    template: api/deployment.yaml
+    set:
+      sso.oidc.enabled: true
+      sso.oidc.providerURL: https://kc.example.com/realms/pupitre
+      sso.oidc.clientID: pupitre
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: OIDC_PROVIDER_URL
+            value: https://kc.example.com/realms/pupitre
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: OIDC_CLIENT_SECRET_FILE
+            value: /etc/oidc/OIDC_CLIENT_SECRET
+      - notContains:
+          path: spec.template.spec.containers[0].env
+          any: true
+          content:
+            name: OIDC_GROUP_ADMINS
+
+  - it: sets no replica count when the API autoscales
+    template: api/deployment.yaml
+    set:
+      api.autoscaling.enabled: true
+    asserts:
+      - notExists:
+          path: spec.replicas

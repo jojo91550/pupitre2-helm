@@ -1,0 +1,13 @@
+apiVersion: v2
+name: pupitre
+description: Pupitre Learning Platform (API, Frontend, PostgreSQL)
+type: application
+version: 2.0.0
+appVersion: "0.1.0"
+keywords:
+  - pupitre
+  - education
+
+annotations:
+  org.opencontainers.image.source: https://github.com/jojo91550/pupitre2-helm
+  org.opencontainers.image.description: Pupitre Learning Platform (API, Frontend, PostgreSQL)
